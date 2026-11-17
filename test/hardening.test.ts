@@ -88,15 +88,16 @@ test("vendor text can't close the <vendor_text> fence early", () => {
 
 // ---------- HTTP server, end to end ----------
 
-async function startServer(t: { after: (fn: () => Promise<void>) => void }) {
+async function startServer(t: { after: (fn: () => Promise<void>) => void }, overrides: NodeJS.ProcessEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tripwire-test-"));
   const port = 20000 + Math.floor(Math.random() * 20000);
   const env = {
     ...process.env,
     PORT: String(port), HOST: "127.0.0.1", STATE_FILE: join(dir, "state.json"), KITE_MODE: "mock",
     // Empty values keep a developer's .env keys out of the test run (real env vars win over .env).
-    SERV_API_KEY: "", REPPO_CREDIT_TOKEN: "", REPPO_SANDBOX: "", TRIPWIRE_OWNER_TOKEN: "", TRIPWIRE_AGENT_KEYS: "",
-    POLICY_FILE: "", NOTIFY_WEBHOOK_URL: "", PUBLIC_URL: "",
+    SERV_API_KEY: "", REPPO_API_KEY: "", REPPO_CREDIT_TOKEN: "", REPPO_SANDBOX: "", TRIPWIRE_OWNER_TOKEN: "", TRIPWIRE_AGENT_KEYS: "",
+    POLICY_FILE: "", NOTIFY_WEBHOOK_URL: "", PUBLIC_URL: "", PUBLIC_DEMO: "false", PUBLIC_LIVE: "false",
+    ...overrides,
   };
   const child = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "server.ts")], { env, stdio: ["ignore", "pipe", "pipe"] });
   t.after(async () => {
@@ -137,6 +138,47 @@ const until = async <T>(fn: () => Promise<T | undefined>, ms = 5000): Promise<T>
   }
   throw new Error("timed out waiting");
 };
+
+test("preview decisions skip settlement and stop before requesting owner approval", async () => {
+  const preview = new Engine({ ...offline(), previewOnly: true });
+  const safe = validateIntent(body({ payee: "searchapi.example", payeeName: "SearchAPI", amountUsd: 0.4 })) as PaymentIntent;
+  const approved = await preview.decide(safe);
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.payment, undefined);
+
+  const liveChecks = new Engine({ ...offline(), previewOnly: true, kiteMode: "kpass" });
+  liveChecks.onHumanNeeded = () => assert.fail("preview must never create a Kite approval");
+  const review = await liveChecks.decide(validateIntent(body()) as PaymentIntent);
+  assert.equal(review.status, "blocked");
+  assert.equal(review.steps.at(-1)?.tier, 3);
+  assert.match(review.steps.at(-1)?.reasons[0] ?? "", /public preview ends here/);
+  assert.equal(review.payment, undefined);
+});
+
+test("public preview cannot read private receipts or the owner's policy", async (t) => {
+  const ownerToken = "local-test-owner-token-123456789";
+  const call = await startServer(t, {
+    PUBLIC_LIVE: "true", KITE_MODE: "kpass", POLICY_FILE: "deploy/live-policy.json",
+    KITE_PAY_FROM: "allowance", TRIPWIRE_OWNER_TOKEN: ownerToken, PATH: "",
+  });
+  const owner = { Authorization: `Bearer ${ownerToken}` };
+  const submitted = await call("/api/intents", {
+    method: "POST", headers: owner,
+    body: JSON.stringify(body({ url: "https://127.0.0.1", amountUsd: 5 })),
+  });
+  assert.equal(submitted.status, 202);
+  assert.equal((await call(submitted.body.receipt, { headers: owner })).status, 200);
+  assert.equal((await call(submitted.body.receipt)).status, 404);
+  assert.equal((await call("/api/agent/policy")).status, 403);
+
+  const privateState = (await call("/api/state", { headers: owner })).body;
+  const publicState = (await call("/api/state")).body;
+  assert.equal(privateState.receipts.length, 1);
+  assert.equal(privateState.policy.allowanceUsd, 0.4);
+  assert.deepEqual(publicState.receipts, []);
+  assert.equal(publicState.policy.allowanceUsd, DEMO_POLICY.allowanceUsd);
+  assert.match(publicState.modes.kite, /settlement off/);
+});
 
 test("server: health, bad bodies, decisions, idempotent retries and static files", async (t) => {
   const call = await startServer(t);

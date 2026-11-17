@@ -512,7 +512,7 @@ interface StepRecord {
       <h3>SERV Reasoning</h3>
       <p><code>POST /v1/chat/completions</code> on <code>gpt-5.4-mini-serv-kronos-multipath</code> with <code>response_format.json_schema</code> in strict mode, <code>reasoning_effort</code>, and the <code>serv_prompt_guard</code> and <code>serv_shadow_agent</code> tools. <strong>Verified live and benchmarked</strong>: it passes purchases that match the task, escalates vendor text that tries to change payment details, and escalates off-task purchases. Each receipt keeps SERV's request id.</p>
       <h3>Reppo</h3>
-      <p><code>POST /api/v1/agents/evals</code> (API key) or <code>/api/v1/x402/evals</code> (credit token) with <code>{ taskType: "action", input }</code>, then polling until <code>COMPLETED</code>. The panel's <code>result.route</code> (<code>ship</code>, <code>review</code>, <code>block</code>), score, confidence and rubric go on the receipt. <strong>Built and tested to Reppo's current API</strong>; a live verdict needs a key or credit token.</p>
+      <p><code>POST /api/v1/agents/evals</code> (API key) or <code>/api/v1/x402/evals</code> (credit token) with <code>{ taskType: "action", input }</code>, then polling until <code>COMPLETED</code>. The panel's <code>result.route</code> (<code>ship</code>, <code>review</code>, <code>block</code>), score, confidence and rubric go on the receipt. The November 8 live run recorded evaluation <code>cmw88d9h2000008l8yb3aq1a5</code> with score 75 and route <code>block</code>.</p>
       <h3>Kite Agent Passport</h3>
       <p>Kite has no public HTTP API; agents use the <code>kpass</code> and <code>ksearch</code> CLIs, always with <code>--output json</code> and never through a shell. Tripwire follows the command reference in Kite's official <a href="https://github.com/gokite-ai/passport-skills">passport-skills</a> (kpass 6.8.9+).</p>
       <ul>
@@ -522,7 +522,7 @@ interface StepRecord {
         <li><strong>Directory check:</strong> <code>ksearch service search &lt;payee name&gt;</code>, matched on the payee's domain.</li>
         <li><strong>Receipts</strong> show the amount, the merchant's HTTP status, Kite's own message, and the transaction hash and chain read from <code>kpass activity</code>. Tripwire never builds explorer URLs.</li>
       </ul>
-      <p><strong>Real payment made:</strong> $0.001 to <code>agent402.tools</code> from the account allowance on Base, transaction <code>0xdba0dc8573fbddcdd0b6d2ff5e8c936f84372afa277b510dbd99a33432dfbb20</code>. The passkey step-up is tested against a simulated kpass that answers with Kite's documented replies. Offline, a stand-in directory lists the legitimate demo vendors.</p>
+      <p>On November 8, Tripwire paid $0.001 USDC to <code>agent402.tools</code> from a Kite allowance on Base. The passkey step-up is tested against a simulated kpass. <a href="https://basescan.org/tx/0xba29d76792d5de4b498d48f38daa73f9d3a221ceee9029be530935177da872bc">View the historical Base transaction</a>.</p>
     </section>
 
     <section id="security">

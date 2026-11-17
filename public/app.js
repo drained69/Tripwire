@@ -69,14 +69,15 @@ function render() {
     .join("");
   renderIntegrations(modes);
 
-  $("heroMode").textContent = publicLive ? "Public demo · real payments" : state.live ? "Live · Kite payments" : "Scripted demo · simulated payments";
+  $("heroMode").textContent = publicLive ? "Public preview · settlement disabled" : state.live ? "Live · Kite payments" : "Scripted demo · simulated payments";
   $("next").hidden = !publicLive && (state.live || !owner);
   $("reset").hidden = state.live || !owner;
-  $("next").textContent = publicLive ? "Run a real test payment" : "Run next demo payment";
+  $("next").textContent = publicLive ? "Check a payment" : "Run next demo payment";
   $("next").disabled = demoBusy || (!publicLive && demoRemaining === 0);
   $("reset").disabled = demoBusy;
+  $("previewEvidence").hidden = !publicLive;
   $("demoHint").textContent = publicLive
-    ? `Requests one real payment of up to ${usd(session.testPayment.amountUsd)} to ${session.testPayment.payee} from the shared allowance.`
+    ? `Preview a ${usd(session.testPayment.amountUsd)} x402 request to ${session.testPayment.payee}. Open the receipt to see which checks ran.`
     : state.live
       ? "Approved payments use real funds through Kite."
       : demoRemaining ? `${demoRemaining} scripted payments left. Each shows a different decision path.` : "All scripted payments complete. Reset to run them again.";
@@ -177,7 +178,7 @@ function liveCost(r) {
 
 function emptyFeed(total) {
   if (total) return `<div class="empty"><p>No decisions match this filter.</p><button class="btn outline sm" data-clear-filter>Show all decisions</button></div>`;
-  return `<div class="empty"><div class="h3">No payments yet</div><p>${publicLive ? "Run a real test payment to see how Tripwire checks it." : state.live ? "Requests will appear here as your agents submit them." : "Run the first demo payment to see how Tripwire checks it."}</p></div>`;
+  return `<div class="empty"><div class="h3">No payments yet</div><p>${publicLive ? "Check a payment to see its decision and receipt." : state.live ? "Requests will appear here as your agents submit them." : "Run the first demo payment to see how Tripwire checks it."}</p></div>`;
 }
 
 /** A passkey step still open is waiting on you, not escalating further. */
@@ -220,7 +221,9 @@ function decision(r) {
         </div>` : ""}
       </div>`
     : "";
-  const paidNote = p && r.status !== "payment_unknown" && (p.error || p.mode === "live")
+  const paidNote = publicLive && r.status === "approved"
+    ? '<div class="paid-note">Checks passed · settlement disabled</div>'
+    : p && r.status !== "payment_unknown" && (p.error || p.mode === "live")
     ? `<div class="paid-note ${p.error ? "warn" : ""}">${p.state === "paid" ? `Paid through Kite${p.amountUsd !== undefined ? ` · ${usd(p.amountUsd)}` : ""}${p.paymentId ? ` · ${esc(p.paymentId)}` : ""}` : "Not paid"}${p.error ? ` · ${esc(p.error)}` : ""}</div>`
     : "";
   return `<article tabindex="-1" class="decision ${seen.has(i.id) ? "" : "new"}">
@@ -465,7 +468,7 @@ function renderIntegrations(modes) {
   $("integrations").innerHTML = items.map(([k, name, body]) => {
     const v = modes[k];
     const cls = modeClass(v);
-    const label = cls === "live" ? "Live" : cls === "sandbox" ? "Sandbox" : v.startsWith("off") ? "Off · you decide" : "Offline stand-in";
+    const label = v.startsWith("preview") ? "Preview" : cls === "live" ? "Live" : cls === "sandbox" ? "Sandbox" : v.startsWith("off") ? "Off · you decide" : "Offline stand-in";
     return `<div class="card integ">
       <div class="top"><h3 class="h3">${name}</h3><span class="status ${cls}">${label}</span></div>
       <p>${body}</p>
@@ -544,11 +547,10 @@ $("showMore").onclick = () => {
 async function runPayment(reset = false) {
   if (demoBusy || !state) return;
   if (reset && !confirm("Reset the scripted demo? This clears its receipts, calibration, and policy edits.")) return;
-  if (publicLive && !confirm(`Send one real payment of up to ${usd(session.testPayment.amountUsd)} to ${session.testPayment.payee} from the shared allowance?`)) return;
   demoBusy = true;
   render();
   const status = $("paymentStatus");
-  status.textContent = reset ? "Resetting demo…" : "Submitting payment request…";
+  status.textContent = reset ? "Resetting demo…" : publicLive ? "Starting payment check…" : "Submitting payment request…";
   try {
     const path = reset ? "/api/demo/reset" : publicLive ? "/api/public/pay" : "/api/demo/next";
     const result = await (await checked(await api(path, { method: "POST" }))).json();

@@ -19,6 +19,8 @@ export interface EngineConfig {
   kite?: KiteOptions;
   /** Execute the Kite payment after approval. Replays turn this off. */
   executePayments: boolean;
+  /** Public preview runs payment checks without opening a Kite approval or settling. */
+  previewOnly?: boolean;
 }
 
 /** Tier-0 flags that force at least a Reppo review regardless of amount or calibration. */
@@ -67,6 +69,7 @@ export class Engine {
 
   /** Money that has left, or may have left, the allowance. Unknown and held payments count until resolved. */
   spentUsd(now = new Date()): number {
+    if (this.cfg.previewOnly) return 0;
     const since = periodStart(this.cfg.policy.resetPeriod, now);
     let total = 0;
     for (const r of this.receipts.values()) {
@@ -130,7 +133,7 @@ export class Engine {
       // Live payments only: the merchant's own price for this exact request.
       live && intent.url ? quotePrice(intent) : undefined,
     ]);
-    const others = [...this.receipts.values()].filter((r) => r.intent.id !== intent.id);
+    const others = this.cfg.previewOnly ? [] : [...this.receipts.values()].filter((r) => r.intent.id !== intent.id);
     const tier0 = runTier0(intent, {
       policy,
       spentUsd: this.spentUsd(),
@@ -184,6 +187,10 @@ export class Engine {
     }
 
     if (next === 3) {
+      if (this.cfg.previewOnly) {
+        this.push(receipt, humanStep("declined", ["This payment needs owner approval. The public preview ends here."], Date.now(), "mock"));
+        return this.finish(receipt, "blocked");
+      }
       const answer = await this.askHuman(receipt);
       // Reppo's track record: did the owner agree with the review it asked for?
       if (answer !== "failed") this.calibration.recordOwnerAnswer(reppoRoute(receipt), answer);
@@ -266,7 +273,7 @@ export class Engine {
     }
     receipt.decidedAt = new Date().toISOString();
     receipt.verificationCostUsd = receipt.steps.reduce((a, s) => a + s.costUsd, 0);
-    if (status === "blocked" || !this.cfg.executePayments) {
+    if (status === "blocked" || !this.cfg.executePayments || this.cfg.previewOnly) {
       receipt.status = status;
       this.emit(receipt);
       return receipt;
@@ -276,9 +283,7 @@ export class Engine {
     const sessionId = this.stepUpSessions.get(receipt.intent.id);
     this.stepUpSessions.delete(receipt.intent.id);
     const idempotencyKey = randomUUID();
-    // Public visitors run Tiers 0 and 1 live (real SERV call) but execute Tier 2 in mock — the
-    // server's kpass is not signed in as a real person and cannot move money on their behalf.
-    const execMode: KiteMode = receipt.intent.agentId === "public-visitor" ? "mock" : this.cfg.kiteMode;
+    const execMode = this.cfg.kiteMode;
     receipt.status = "paying";
     receipt.payment = { executed: false, state: "unknown", mode: execMode === "kpass" ? "live" : "mock", idempotencyKey, sessionId };
     this.onChange?.(receipt, true);

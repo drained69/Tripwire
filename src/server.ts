@@ -35,8 +35,7 @@ const loopback = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/.test(host);
 const PUBLIC_DEMO = process.env.PUBLIC_DEMO === "true";
 /** TRUST_PROXY=true: take the client address from the proxy (Railway, Fly, nginx) for rate limits. */
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
-/** PUBLIC_LIVE=true: anyone can trigger ONE server-defined capped real payment and watch the feed.
- *  Admin (policy, approvals, marking payments) still needs the owner token. */
+/** PUBLIC_LIVE=true: anyone can run a fixed payment preview with live checks. */
 const PUBLIC_LIVE = process.env.PUBLIC_LIVE === "true";
 /** The agent identity every anonymous visitor acts as in PUBLIC_LIVE mode. */
 const PUBLIC_VISITOR = "public-visitor";
@@ -53,13 +52,14 @@ try {
   fail((err as Error).message);
 }
 if (PUBLIC_DEMO && LIVE) fail("PUBLIC_DEMO=true is only for the demo: it opens the dashboard to anyone, which must never control real money.");
-if (PUBLIC_LIVE && !LIVE) fail("PUBLIC_LIVE=true needs real payments: set KITE_MODE=kpass.");
+if (PUBLIC_LIVE && !LIVE) fail("PUBLIC_LIVE=true needs live checks: set KITE_MODE=kpass.");
 if (PUBLIC_LIVE && PUBLIC_DEMO) fail("Set PUBLIC_DEMO or PUBLIC_LIVE, not both.");
 if (!auth.ownerToken && (LIVE || (!loopback && !PUBLIC_DEMO))) {
   fail(`${LIVE ? "KITE_MODE=kpass moves real money" : `HOST=${host} is reachable beyond this machine`}, so set TRIPWIRE_OWNER_TOKEN (24+ random characters, e.g. \`openssl rand -hex 24\`).`);
 }
 if (LIVE && !PUBLIC_LIVE && !auth.agentKeys.size) fail("Live mode needs at least one agent key: TRIPWIRE_AGENT_KEYS=agent-id:key (24+ characters each).");
 if (PUBLIC_LIVE && !auth.ownerToken) fail("PUBLIC_LIVE still needs TRIPWIRE_OWNER_TOKEN: it locks admin (policy, approvals) away from the public.");
+if (PUBLIC_LIVE && [...auth.agentKeys.values()].includes(PUBLIC_VISITOR)) fail("public-visitor is reserved for the public preview.");
 if (cfg.kite?.payFrom === "session" && !cfg.kite.sessionId) fail("KITE_PAY_FROM=session needs KITE_SESSION_ID.");
 
 /** Agents shown on the dashboard and accepted by the policy compiler. Live: the ones with API keys. */
@@ -88,6 +88,11 @@ if (!cfg.policy) fail("Live mode needs your policy: set POLICY_FILE (start from 
 let demoQueue: PaymentIntent[] = LIVE ? [] : demoScript();
 let replayCache: { calibrated: WeekResult[]; baseline: WeekResult[] } | undefined;
 const sseClients = new Set<ServerResponse>();
+const previewClients = new Set<ServerResponse>();
+const preview = PUBLIC_LIVE ? new Engine({
+  ...cfg, policy: structuredClone(DEMO_POLICY), previewOnly: true,
+}) : undefined;
+if (preview) preview.onChange = (receipt) => broadcast({ type: "receipt", receipt }, previewClients);
 const limiter = new LoginLimiter();
 
 function createEngine(fresh = false): Engine {
@@ -141,9 +146,9 @@ function persist(e: Engine, now = false) {
   else persistTimer = setTimeout(write, 200);
 }
 
-function broadcast(msg: unknown) {
+function broadcast(msg: unknown, clients = sseClients) {
   const line = `data: ${JSON.stringify(msg)}\n\n`;
-  for (const c of sseClients) c.write(line);
+  for (const c of clients) c.write(line);
 }
 
 /** Tells the owner a payment is waiting on them (Slack-compatible incoming webhook). */
@@ -160,16 +165,17 @@ function notify(r: Receipt, approvalUrl?: string) {
   }).catch((err) => console.error("notify failed:", err.message));
 }
 
-function state() {
+function state(view = engine) {
+  const isPreview = view === preview;
   return {
-    live: LIVE,
-    modes: describeModes(cfg),
-    policy: cfg.policy,
-    spentUsd: engine.spentUsd(),
+    live: LIVE && !isPreview,
+    modes: { ...describeModes(view.cfg), ...(isPreview ? { kite: "preview (settlement off)" } : {}) },
+    policy: view.cfg.policy,
+    spentUsd: view.spentUsd(),
     demoRemaining: demoQueue.length,
-    receipts: [...engine.receipts.values()].sort((a, b) => b.intent.createdAt.localeCompare(a.intent.createdAt)),
-    calibration: engine.calibration.view(),
-    agents: agentList(),
+    receipts: [...view.receipts.values()].sort((a, b) => b.intent.createdAt.localeCompare(a.intent.createdAt)),
+    calibration: view.calibration.view(),
+    agents: isPreview ? [{ id: PUBLIC_VISITOR, task: "" }] : agentList(),
   };
 }
 
@@ -253,7 +259,7 @@ const caller = (req: IncomingMessage): Caller => {
   const who = identify(req, auth);
   if (who.role !== "anon") return who; // a real owner token or agent key always wins
   if (PUBLIC_DEMO) return { role: "owner" }; // demo dashboard, no real money
-  if (PUBLIC_LIVE) return { role: "agent", agentId: PUBLIC_VISITOR }; // can pay via the button, never admin
+  if (PUBLIC_LIVE) return { role: "agent", agentId: PUBLIC_VISITOR };
   return who;
 };
 
@@ -309,14 +315,14 @@ const server = createServer(async (req, res) => {
     const ownerOnly = () => json(res, 403, { error: "Only the owner can do this." });
     const publicVisitor = PUBLIC_LIVE && who.role === "agent" && who.agentId === PUBLIC_VISITOR;
 
-    // Public live demo: a visitor can trigger ONE server-defined capped payment, and nothing else that spends.
+    const view = publicVisitor ? preview! : engine;
     if (publicVisitor) {
       if (method === "POST" && path === "/api/public/pay") {
         const pi = publicPayIntent();
-        engine.decide(pi).catch((e) => console.error("decide failed", e));
+        view.decide(pi).catch((e) => console.error("preview failed", e));
         return json(res, 202, { id: pi.id, receipt: `/api/receipts/${pi.id}` });
       }
-      if (method === "POST" && path === "/api/intents") return json(res, 403, { error: "This public demo only runs its own test payment. Use the button on the page." });
+      if (method === "POST" && path === "/api/intents") return json(res, 403, { error: "Use the dashboard to run the public payment preview." });
     }
 
     // Agents submit intents here. Responds immediately; the decision streams over /api/events.
@@ -328,6 +334,7 @@ const server = createServer(async (req, res) => {
       }
       const v = validateIntent(body);
       if (typeof v === "string") return json(res, 400, { error: v });
+      if (LIVE && v.agentId === PUBLIC_VISITOR) return json(res, 400, { error: "public-visitor is reserved for the public preview." });
       if (LIVE && !v.url) return json(res, 400, { error: "url is required in live mode: it is the x402 endpoint Kite pays." });
       // Same agent + same requestKey: return the original decision instead of paying twice.
       if (v.requestKey) {
@@ -340,30 +347,32 @@ const server = createServer(async (req, res) => {
 
     const receiptMatch = path.match(/^\/api\/receipts\/([\w-]+)$/);
     if (method === "GET" && receiptMatch) {
-      const r = engine.receipts.get(receiptMatch[1]);
+      const r = view.receipts.get(receiptMatch[1]);
       if (!r || (who.role === "agent" && r.intent.agentId !== who.agentId)) return json(res, 404, { error: "unknown receipt" });
       return json(res, 200, r);
     }
 
     if (method === "GET" && path === "/api/agent/policy") {
+      if (publicVisitor) return ownerOnly();
       return json(res, 200, agentPolicy(who.role === "agent" ? who.agentId : (url.searchParams.get("agentId") ?? "owner")));
     }
 
-    // Public visitors may READ the live feed (state, events); every mutation stays owner-only.
+    // The public state and event feed contain only preview activity.
     const publicRead = publicVisitor && method === "GET" && (path === "/api/state" || path === "/api/events");
     if (!owner && !publicRead) return ownerOnly();
 
     // ---------- Owner ----------
-    if (method === "GET" && path === "/api/state") return json(res, 200, state());
+    if (method === "GET" && path === "/api/state") return json(res, 200, state(view));
 
     if (method === "GET" && path === "/api/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", ...SECURITY_HEADERS });
       res.write(": connected\n\n");
-      sseClients.add(res);
+      const clients = publicVisitor ? previewClients : sseClients;
+      clients.add(res);
       const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
       req.on("close", () => {
         clearInterval(ping);
-        sseClients.delete(res);
+        clients.delete(res);
       });
       return;
     }
@@ -464,7 +473,7 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`Tripwire on http://${host.includes(":") ? `[${host}]` : host}:${port}${PUBLIC_URL.startsWith("http://127") ? "" : ` (public: ${PUBLIC_URL})`}`);
   console.log("Modes:", describeModes(cfg));
-  console.log(PUBLIC_LIVE ? "Public LIVE: anyone can trigger the capped test payment; admin stays behind the owner token." : PUBLIC_DEMO ? "Public demo: open to anyone, rate-limited, no real money." : auth.ownerToken ? `Owner login required. ${auth.agentKeys.size} agent key(s) loaded.` : "Open local demo: no login (loopback only).");
+  console.log(PUBLIC_LIVE ? "Public preview: live checks on a fixed request, settlement disabled." : PUBLIC_DEMO ? "Public demo: open to anyone, rate-limited, no real money." : auth.ownerToken ? `Owner login required. ${auth.agentKeys.size} agent key(s) loaded.` : "Open local demo: no login (loopback only).");
 });
 
 // Finish the in-flight write before exiting.

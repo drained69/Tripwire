@@ -17,7 +17,7 @@ Tripwire ships as a dependency-free MCP server (stdio). An agent adds it once an
 ```bash
 claude mcp add tripwire \
   --env TRIPWIRE_URL=http://127.0.0.1:8787 \
-  --env TRIPWIRE_AGENT_KEY=<this agent's key> \
+  --env TRIPWIRE_AGENT_KEY="$AGENT_KEY" \
   -- node /path/to/tripwire/src/mcp.ts
 ```
 
@@ -49,7 +49,7 @@ Results come back as text for the model and as `structuredContent` with the full
 
 The server binds to `127.0.0.1:8787` by default. Request bodies must be JSON objects, up to 64 KB.
 
-**Authentication.** With `TRIPWIRE_OWNER_TOKEN` set, every `/api/*` call except sign-in needs a caller. Agents send `Authorization: Bearer <agent key>`; the owner signs in on the dashboard (an HttpOnly, SameSite=Strict cookie) or sends the owner token as a Bearer token. Without an owner token (the local demo), callers addressing `localhost` are the owner.
+**Authentication.** Agents send `Authorization: Bearer <agent key>`. The owner signs in on the dashboard (an HttpOnly, SameSite=Strict cookie) or sends the owner token as a Bearer token. The open local demo grants owner access to loopback requests. When `PUBLIC_LIVE=true`, anonymous dashboard visitors have access to the isolated preview routes below.
 
 | Method | Path | Who | Description |
 |---|---|---|---|
@@ -68,6 +68,8 @@ The server binds to `127.0.0.1:8787` by default. Request bodies must be JSON obj
 | `POST` | `/api/demo/next` · `/api/demo/reset` | owner | Play the next scripted payment, or clear everything. Off (`409`) in live mode. |
 | `GET` | `/api/session` · `/api/health` | anyone | Whether sign-in is required and who you are; liveness. |
 | `POST` | `/api/login` · `/api/logout` | anyone | `{ token }` → sets the owner cookie (10 failures per 10 minutes per address, then `429`). |
+
+**Public preview.** With `PUBLIC_LIVE=true`, `POST /api/public/pay` checks one server-defined intent and returns `202 { id, receipt }`. Anonymous visitors can read preview receipts, state, and events from `/api/receipts/:id`, `/api/state`, and `/api/events`. These routes use the preview's demo policy and in-memory receipts. The preview skips settlement and ends at the owner-approval boundary when approval is required.
 
 **Errors** are JSON `{ "error": "…" }` with a meaningful status: `400` invalid input, `401` no caller, `403` wrong role or cross-site write, `404` unknown, `409` wrong state, `413` body too large, `429` rate-limited.
 

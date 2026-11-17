@@ -140,9 +140,8 @@ export function syntheticWeek(week: number, seed = 7): LabelledIntent[] {
 }
 
 /**
- * The one payment a PUBLIC_LIVE visitor can trigger: a tiny, real, Kite-payable call to a known
- * x402 merchant. Server-defined so the public can never redirect the owner's money to an arbitrary
- * payee. A fresh requestKey each time so repeated clicks are not collapsed as duplicates.
+ * The server-defined x402 request checked in the public preview. Its receipt records
+ * the decision without settling the request.
  */
 export const PUBLIC_TEST_PAYMENT = { payee: "agent402.tools", amountUsd: 0.001 } as const;
 

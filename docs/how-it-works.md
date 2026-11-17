@@ -244,7 +244,7 @@ A six-week replay of seeded traffic: 46 payments a week across three agents, 5 o
 | Bad payments blocked | **30 / 30** | 30 / 30 |
 | Legitimate payments blocked | **0** | 0 |
 | Owner interruptions on legitimate payments | **4** | 14 |
-| Cost of checks at live prices | **$21.74** | $22.40 |
+| Cost of checks at modeled live prices | $32.30 | $29.66 |
 
 Reproduce it with `npm run replay`, which prints the per-week rows these totals come from. It never calls paid APIs.
 
